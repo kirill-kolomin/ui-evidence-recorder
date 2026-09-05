@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ui-evidence-recorder",
+  "version": "1.0.0",
+  "description": "Teaches an agent to record watchable evidence videos of a web app with Playwright: a studio wrapper page that never navigates, a title card over the boot, a drawn cursor, highlight rings, a narration bar and severity-coloured notes.",
+  "author": {
+    "name": "Kirill Kolomin"
+  },
+  "license": "MIT",
+  "keywords": ["playwright", "recording", "evidence", "screencast", "qa", "demo"]
+}

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>UI evidence recording</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0f172a; font-family: Inter, system-ui, sans-serif; }
+      #app { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+
+      /* Title card. Covers the iframe until the app has actually painted, so a
+         viewer never watches the app boot on a blank white page. */
+      #card {
+        position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 14px;
+        background: #0f172a; color: #e2e8f0; transition: opacity .35s; text-align: center; padding: 40px;
+      }
+      #card.hidden { opacity: 0; pointer-events: none; }
+      #card h1 { margin: 0; font-size: 30px; font-weight: 650; letter-spacing: -0.5px; color: #f8fafc; }
+      #card p { margin: 0; font-size: 17px; color: #94a3b8; max-width: 720px; line-height: 1.5; }
+      #card .tag {
+        font-size: 13px; text-transform: uppercase; letter-spacing: 1.6px;
+        color: #f59e0b; font-weight: 700;
+      }
+
+      /* The narration bar. It runs along the bottom for the whole recording and
+         is the only thing that tells the viewer what they are looking at. */
+      #caption {
+        position: absolute; left: 0; right: 0; bottom: 0; z-index: 15;
+        padding: 14px 22px; background: rgba(15, 23, 42, .93); color: #fff;
+        font-size: 17px; line-height: 1.45; opacity: 0; transition: opacity .18s;
+      }
+
+      /* Highlight ring. Drawn in this page, so it sits above every stacking
+         context the app under test can create, including the browser top layer. */
+      #ring {
+        position: absolute; z-index: 16; border: 3px solid #f59e0b; border-radius: 10px;
+        box-shadow: 0 0 0 4px rgba(245, 158, 11, .3); opacity: 0; transition: opacity .12s;
+        pointer-events: none;
+      }
+      #ringlabel {
+        position: absolute; z-index: 17; background: #f59e0b; color: #111827;
+        font-size: 13px; font-weight: 650; padding: 3px 9px; border-radius: 6px;
+        opacity: 0; transition: opacity .12s; white-space: nowrap; pointer-events: none;
+      }
+
+      /* A drawn cursor: the recording has no real pointer, so every move and click
+         must be visible here or the viewer cannot follow what is being operated. */
+      #cursor {
+        position: absolute; z-index: 30; left: 0; top: 0; width: 34px; height: 34px;
+        pointer-events: none; opacity: 0; transform: translate(-3px, -3px);
+        transition: left .55s cubic-bezier(.33,.7,.3,1), top .55s cubic-bezier(.33,.7,.3,1), opacity .2s;
+        filter: drop-shadow(0 0 3px rgba(255,255,255,.95)) drop-shadow(0 3px 6px rgba(0,0,0,.55));
+      }
+      #ripple {
+        position: absolute; z-index: 29; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+        border-radius: 50%; border: 3px solid #f59e0b; background: rgba(245,158,11,.28);
+        opacity: 0; pointer-events: none;
+      }
+      @keyframes ev-ripple { 0% { transform: scale(.35); opacity: .95; } 100% { transform: scale(1.5); opacity: 0; } }
+      #ripple.go { animation: ev-ripple .45s ease-out; }
+
+      /* A side note. This is NOT an error banner: most of what lands here is a
+         measurement or a passing check, so it wears the same calm slate as the
+         caption bar by default. Red is reserved for a genuine failure, because a
+         red box in the corner reads as "something went wrong" whatever it says. */
+      #note {
+        position: absolute; z-index: 16; right: 18px; top: 18px; max-width: 380px;
+        background: rgba(15, 23, 42, .93); color: #fff; font-size: 15px; font-weight: 600;
+        padding: 10px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s;
+        border-left: 4px solid #94a3b8;
+      }
+      #note.pass { border-left-color: #22c55e; }
+      #note.fail { background: rgba(220, 38, 38, .95); border-left-color: #fca5a5; }
+    </style>
+  </head>
+  <body>
+    <iframe id="app" title="Application under test"></iframe>
+    <div id="ring"></div>
+    <div id="ripple"></div>
+    <svg id="cursor" viewBox="0 0 24 24" fill="none">
+      <path d="M4 2l14 8.5-6.1 1.2L9.4 20 4 2z" fill="#111827" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" />
+    </svg>
+    <div id="ringlabel"></div>
+    <div id="note"></div>
+    <div id="caption"></div>
+    <div id="card">
+      <div class="tag" id="card-tag">Evidence</div>
+      <h1 id="card-title">Preparing…</h1>
+      <p id="card-sub"></p>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      // The driver sets the iframe src from here; this page itself NEVER
+      // navigates, so the recording survives every page load the app makes.
+      window.loadFrame = (url) => new Promise((resolve) => {
+        const f = $('app');
+        f.onload = () => resolve();
+        f.src = url;
+      });
+
+      window.showCard = (title, sub, tag) => {
+        $('card-title').textContent = title || '';
+        $('card-sub').textContent = sub || '';
+        if (tag) $('card-tag').textContent = tag;
+        $('card').classList.remove('hidden');
+      };
+      window.hideCard = () => $('card').classList.add('hidden');
+
+      window.setCaption = (t) => {
+        const c = $('caption');
+        c.textContent = t || '';
+        c.style.opacity = t ? '1' : '0';
+      };
+
+      /**
+       * Show a note in the top-right corner. `kind` is 'info' (the default),
+       * 'pass' or 'fail'; when it is omitted a leading PASS/FAIL in the text
+       * decides, so a verdict never has to be coloured by hand.
+       */
+      window.setNote = (t, kind) => {
+        const n = $('note');
+        const text = t || '';
+        const k = kind
+          || (/^\s*PASS\b/i.test(text) ? 'pass' : /^\s*FAIL\b/i.test(text) ? 'fail' : 'info');
+        n.className = k === 'info' ? '' : k;
+        n.textContent = text;
+        n.style.opacity = text ? '1' : '0';
+      };
+
+      const cursor = () => $('cursor');
+
+      /** Park the cursor somewhere without animating, e.g. before the first move. */
+      window.placeCursor = (x, y) => {
+        const c = cursor();
+        const prev = c.style.transition;
+        c.style.transition = 'none';
+        c.style.left = x + 'px';
+        c.style.top = y + 'px';
+        c.style.opacity = '1';
+        void c.offsetWidth;
+        c.style.transition = prev;
+      };
+
+      /** Glide the cursor to a point. The caller waits out the travel time. */
+      window.moveCursor = (x, y) => {
+        const c = cursor();
+        c.style.opacity = '1';
+        c.style.left = x + 'px';
+        c.style.top = y + 'px';
+      };
+
+      window.hideCursor = () => { cursor().style.opacity = '0'; };
+
+      /** A click animation at the cursor's current position. */
+      window.clickCursor = () => {
+        const c = cursor();
+        const r = $('ripple');
+        r.style.left = c.style.left;
+        r.style.top = c.style.top;
+        r.classList.remove('go');
+        void r.offsetWidth;
+        r.style.opacity = '1';
+        r.classList.add('go');
+        setTimeout(() => { r.style.opacity = '0'; }, 450);
+      };
+
+      window.showRing = (box, label) => {
+        const r = $('ring'), l = $('ringlabel');
+        if (!box) { r.style.opacity = '0'; l.style.opacity = '0'; return; }
+        r.style.left = (box.x - 5) + 'px';
+        r.style.top = (box.y - 5) + 'px';
+        r.style.width = (box.width + 10) + 'px';
+        r.style.height = (box.height + 10) + 'px';
+        r.style.opacity = '1';
+        l.textContent = label || '';
+        l.style.left = box.x + 'px';
+        l.style.top = Math.max(4, box.y - 28) + 'px';
+        l.style.opacity = label ? '1' : '0';
+      };
+    </script>
+  </body>
+</html>
