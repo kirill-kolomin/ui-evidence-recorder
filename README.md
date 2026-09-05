@@ -28,8 +28,9 @@ ui-evidence-recorder/
 
 ## Install
 
-Clone or copy this directory, then point your client at it the way that client
-documents for loading local plugins.
+```
+npx skillpm install ui-evidence-recorder
+```
 
 ## Use it directly
 
