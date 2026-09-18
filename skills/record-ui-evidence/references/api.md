@@ -69,7 +69,7 @@ has Playwright, without installing this plugin as a dependency.
 | `loadApp(path, readySelector?, { title, sub, tag }?)` | Load a path relative to `appUrl` behind the title card. |
 | `loadUrl(url, readySelector?, { title, sub, tag }?)` | The absolute-URL form, for a second app. |
 | `signInIfNeeded(email, password, readySelector?)` | Signs in only if the sign-in form is what rendered; returns whether it did. |
-| `finish()` | Close everything; returns the path of the written `.webm`, or `null` when `record: false`. |
+| `finish()` | Close the browser, the profile and the studio server; returns the path of the written `.webm`, or `null` when `record: false`. Nothing is released until it runs, so call it from a `finally`; calling it twice is safe. |
 
 ## Recipes
 

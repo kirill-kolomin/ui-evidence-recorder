@@ -4,7 +4,7 @@ description: Record a watchable evidence video of a web app with Playwright - a 
 license: MIT
 metadata:
   author: Kirill Kolomin
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Record UI evidence
@@ -40,6 +40,8 @@ failures that are not obvious until a take is already ruined.
 3. **Write one scenario file per claim.** One video per scenario, self-contained,
    with its own title card, so any single video can be watched alone.
 4. **Run it**, then check the produced `.webm` before handing it over.
+5. **Make sure the run is over.** The take ends when `finish()` has returned and
+   the process has exited — not when the video file appears.
 
 Minimal scenario:
 
@@ -53,15 +55,18 @@ const h = await createHarness({
   brand: 'My App',
 });
 
-await h.card('Saving a draft', 'The bug was that the draft was lost on reload', 'Ticket 123');
-await h.loadApp('/documents');
-await h.caption('Open the document that used to lose its draft.');
-await h.click(h.app.getByRole('link', { name: 'Quarterly report' }), 'open the document');
-await h.typeInto(h.app.locator('#body'), 'A draft nobody should lose', 'type a draft');
-await h.look(h.app.getByText('Saved'), 'the save indicator');
-await h.note('PASS - draft survived the reload');
-await h.caption('The draft is still there after a full reload.', 4000);
-console.log(await h.finish());
+try {
+  await h.card('Saving a draft', 'The bug was that the draft was lost on reload', 'Ticket 123');
+  await h.loadApp('/documents');
+  await h.caption('Open the document that used to lose its draft.');
+  await h.click(h.app.getByRole('link', { name: 'Quarterly report' }), 'open the document');
+  await h.typeInto(h.app.locator('#body'), 'A draft nobody should lose', 'type a draft');
+  await h.look(h.app.getByText('Saved'), 'the save indicator');
+  await h.note('PASS - draft survived the reload');
+  await h.caption('The draft is still there after a full reload.', 4000);
+} finally {
+  console.log(await h.finish());
+}
 ```
 
 Full option and helper reference: `references/api.md`.
@@ -85,6 +90,16 @@ Full option and helper reference: `references/api.md`.
   failure — a red corner box reads as "something went wrong" whatever it says, so
   a measurement or a passing check announced in red misleads the viewer.
 - **One scenario per process, one video per scenario.**
+- **Shut the recording down as soon as the take is finished.** A run holds a
+  Chromium with its renderer and GPU children, a persistent profile directory and
+  the local studio server, and none of it goes away on its own. `finish()` closes
+  all three, so call it from a `finally` — a scenario that throws halfway through
+  otherwise leaves the whole browser resident for the rest of the session — and
+  let the process exit rather than keeping it open for the next scenario. This
+  applies to the throwaway `probe-*.mjs` scripts too: they launch the same
+  browser with `record: false`, and an abandoned probe is as expensive as an
+  abandoned take. If a run had to be interrupted, check for a surviving
+  `chromium`/`node` process from it and stop it before starting the next one.
 
 ## When something looks wrong in the output
 

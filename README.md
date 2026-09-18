@@ -28,8 +28,17 @@ ui-evidence-recorder/
 
 ## Install
 
+In Claude Code, from the marketplace this plugin is listed in:
+
 ```
-npx skillpm install ui-evidence-recorder
+/plugin marketplace add kirill-kolomin/show-it-works-ui
+/plugin install ui-evidence-recorder@show-it-works
+```
+
+In any other agent, install the skill with the [skills.sh](https://skills.sh) CLI:
+
+```
+npx skills add kirill-kolomin/ui-evidence-recorder
 ```
 
 ## Use it directly

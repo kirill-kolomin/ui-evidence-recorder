@@ -294,12 +294,25 @@ export async function createHarness({
     return true;
   };
 
-  /** Close everything and return the path of the written video, or null. */
+  let closed = false;
+  let videoPath = null;
+
+  /**
+   * Close everything and return the path of the written video, or null.
+   * Safe to call twice, so a scenario can call it from a `finally` without
+   * having to track whether the happy path already did.
+   */
   const finish = async () => {
+    if (closed) return videoPath;
+    closed = true;
     const video = page.video();
     await context.close();
     server.close();
-    return video ? await video.path() : null;
+    // close() only stops new connections; a keep-alive socket from the studio
+    // page would hold the process open long after the take is done.
+    server.closeAllConnections?.();
+    videoPath = video ? await video.path() : null;
+    return videoPath;
   };
 
   return {

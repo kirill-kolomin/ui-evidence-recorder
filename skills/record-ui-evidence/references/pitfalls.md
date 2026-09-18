@@ -77,6 +77,21 @@ one run recording another's page.
 **Fix.** The default `wrapperPort: 0` asks the OS for a free port. Leave it alone
 unless something outside genuinely has to reach the studio page.
 
+## The machine crawled after a few takes
+
+**Cause.** A scenario threw before reaching `finish()`, or the script was left
+running after the video had been written. Each run holds a Chromium with its
+renderer and GPU children, a persistent profile and the studio server, and none
+of them are reclaimed when the `.webm` appears — so every take, and every
+abandoned `probe-*.mjs`, adds another browser to the machine for the rest of the
+session.
+
+**Fix.** Call `finish()` from a `finally` so a failed take tears down as
+thoroughly as a good one, and let the process exit instead of holding it open
+for the next scenario. `finish()` is idempotent, so the `finally` is safe even
+when the happy path already called it. After an interrupted run, look for the
+surviving `chromium`/`node` process and stop it before recording again.
+
 ## The reviewer could not tell whether the app did the work
 
 **Cause.** The take started in the middle and proved its point by reading the DOM
