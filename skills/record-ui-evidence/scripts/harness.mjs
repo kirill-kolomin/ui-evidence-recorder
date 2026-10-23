@@ -26,8 +26,8 @@
  * Full option and helper reference: ../references/api.md
  */
 import { createServer } from 'http';
-import { readFileSync, mkdirSync } from 'fs';
-import { dirname, resolve as resolvePath } from 'path';
+import { readFileSync, mkdirSync, existsSync, writeFileSync } from 'fs';
+import { dirname, join, resolve as resolvePath } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
 
@@ -65,6 +65,62 @@ async function loadChromium(explicitPath) {
   );
 }
 
+const CORE = '@showitworks/core';
+
+/** Both entries of a core package, or null when either lacks what the harness calls. */
+function usableCore(core, node) {
+  const fns = [core?.createEventLog, core?.attachCapture, core?.createClient, node?.uploadRunFromFiles, node?.collectGitMeta];
+  return fns.every((fn) => typeof fn === 'function') ? { core, node } : null;
+}
+
+/** Import "." and "./node" of a package directory through its `exports` map. */
+async function importCoreDir(dir) {
+  const root = resolvePath(dir);
+  const { exports: map } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const entry = (key) => {
+    let target = map?.[key];
+    while (target && typeof target === 'object') target = target.import ?? target.node ?? target.default;
+    if (typeof target !== 'string') throw new Error(`${root} exports no "${key}"`);
+    return pathToFileURL(resolvePath(root, target)).href;
+  };
+  return usableCore(await import(entry('.')), await import(entry('./node')));
+}
+
+/**
+ * Find @showitworks/core, which is optional: without it the harness records
+ * exactly as it always has. Same order as loadChromium: an explicit package
+ * directory, the EVIDENCE_SHOWITWORKS env var (also a package directory), a
+ * plain bare import, then the package as seen from the current working
+ * directory. Returns { core, node } or null; never throws.
+ */
+export async function loadShowItWorks(explicitDir) {
+  for (const dir of [explicitDir, process.env.EVIDENCE_SHOWITWORKS]) {
+    if (!dir) continue;
+    try {
+      const found = await importCoreDir(dir);
+      if (found) return found;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  try {
+    const found = usableCore(await import(CORE), await import(`${CORE}/node`));
+    if (found) return found;
+  } catch {
+    /* try the next candidate */
+  }
+  try {
+    // require.resolve() cannot be used: core's exports offer only the `import`
+    // condition. Find the package directory the way require would, then read it.
+    const req = createRequire(resolvePath(process.cwd(), 'package.json'));
+    const dir = (req.resolve.paths(CORE) ?? []).map((p) => join(p, CORE)).find((d) => existsSync(join(d, 'package.json')));
+    if (dir) return await importCoreDir(dir);
+  } catch {
+    /* not installed */
+  }
+  return null;
+}
+
 /**
  * Serve the studio page. Port 0 asks the OS for a free port, which is what keeps
  * several scenarios (or several agents) from colliding on a hard-coded one.
@@ -97,6 +153,8 @@ function serveWrapper(wrapperPath, port) {
  * @param {string} [opts.wrapperPath] Alternative studio page. Default: the bundled wrapper.html.
  * @param {string} [opts.playwrightPath] Explicit path to Playwright's entry file.
  * @param {object} [opts.signInSelectors] Overrides for signInIfNeeded, see below.
+ * @param {object} [opts.showitworks] Optional run upload when @showitworks/core is installed:
+ *   { apiKey, storage, baseUrl, flow, git, corePath, required }. See ../references/api.md.
  */
 export async function createHarness({
   scenario,
@@ -114,6 +172,7 @@ export async function createHarness({
   wrapperPath = `${HERE}/wrapper.html`,
   playwrightPath,
   signInSelectors = {},
+  showitworks = {},
 } = {}) {
   if (!scenario) throw new Error('createHarness needs a scenario name');
   if (!appUrl) throw new Error('createHarness needs an appUrl');
@@ -121,8 +180,18 @@ export async function createHarness({
   const PROFILE = `${root}/profile`;
   const RECORDINGS = `${root}/recordings`;
   const knownOrigins = [appUrl, ...origins];
+  const {
+    apiKey = process.env.SHOWITWORKS_API_KEY,
+    storage = process.env.SHOWITWORKS_STORAGE,
+    baseUrl = process.env.SHOWITWORKS_URL,
+    flow = scenario,
+    git,
+    corePath,
+    required = false,
+  } = showitworks;
 
   const chromium = await loadChromium(playwrightPath);
+  const siw = await loadShowItWorks(corePath);
   mkdirSync(RECORDINGS, { recursive: true });
   const { server, port } = await serveWrapper(wrapperPath, wrapperPort);
 
@@ -133,6 +202,21 @@ export async function createHarness({
     ...(record ? { recordVideo: { dir: `${RECORDINGS}/${scenario}`, size: viewport } } : {}),
     args: ['--disable-dev-shm-usage'],
   });
+
+  // The run's clock starts with the video. With core installed, the app's console
+  // and network are captured from here on; the studio page's own traffic is not.
+  const t0 = Date.now();
+  let log = null;
+  let detach = null;
+  let captureError = null;
+  if (siw) {
+    try {
+      log = siw.core.createEventLog({ t0, source: 'harness', videoOffsetMs: 0 });
+      detach = siw.core.attachCapture(context, log, { ignoreOrigins: [`http://127.0.0.1:${port}`] });
+    } catch (error) {
+      captureError = error;
+    }
+  }
 
   // The persistent profile keeps a session between runs, which silently skips the
   // sign-in step and robs the recording of its most convincing opening. Clear it
@@ -296,15 +380,52 @@ export async function createHarness({
 
   let closed = false;
   let videoPath = null;
+  let settleUpload;
+  /** What became of the run upload; settles when finish() has run. Never rejects. */
+  const upload = new Promise((done) => {
+    settleUpload = done;
+  });
+
+  /**
+   * After the take: write the event log next to the video and, given an API key
+   * and a storage, upload both as one run. A failure is reported, never thrown.
+   */
+  const uploadRun = async (outcome, durationMs) => {
+    if (!siw) return { status: 'skipped', reason: `${CORE} not installed` };
+    if (captureError) return { status: 'failed', reason: captureError.message ?? String(captureError) };
+    try {
+      const eventsPath = `${RECORDINGS}/${scenario}/run/events.jsonl`;
+      mkdirSync(dirname(eventsPath), { recursive: true });
+      writeFileSync(eventsPath, log.toJSONL());
+      if (!apiKey) return { status: 'skipped', reason: 'no API key' };
+      if (!storage) return { status: 'skipped', reason: 'no storage' };
+      const client = siw.core.createClient({ apiKey, ...(baseUrl ? { baseUrl } : {}) });
+      const answer = await siw.node.uploadRunFromFiles(client, {
+        storage, flow, title: scenario, outcome, startedAt: t0, durationMs, source: 'harness',
+        git: await siw.node.collectGitMeta({ overrides: git }),
+        ...(videoPath ? { video: { path: videoPath } } : {}),
+        events: { path: eventsPath },
+      });
+      return { status: 'uploaded', runId: answer?.run?.id, runUrl: answer?.runUrl };
+    } catch (error) {
+      return { status: 'failed', reason: error?.message ?? String(error) };
+    }
+  };
 
   /**
    * Close everything and return the path of the written video, or null.
    * Safe to call twice, so a scenario can call it from a `finally` without
-   * having to track whether the happy path already did.
+   * having to track whether the happy path already did. `outcome` labels the
+   * uploaded run (passed | failed | ...); it is unused without @showitworks/core.
    */
-  const finish = async () => {
+  const finish = async (options) => {
     if (closed) return videoPath;
     closed = true;
+    // Read defensively: 1.1.0 ignored arguments, so `.then(h.finish)` must keep working.
+    const outcome = options?.outcome ?? 'unknown';
+    const durationMs = Date.now() - t0;
+    // Stop listening before the close aborts whatever the app still had in flight.
+    detach?.();
     const video = page.video();
     await context.close();
     server.close();
@@ -312,6 +433,13 @@ export async function createHarness({
     // page would hold the process open long after the take is done.
     server.closeAllConnections?.();
     videoPath = video ? await video.path() : null;
+    const result = await uploadRun(outcome, durationMs);
+    settleUpload(result);
+    if (siw || required) {
+      const line = result.status === 'uploaded' ? `run uploaded: ${result.runUrl}` : `upload ${result.status}: ${result.reason}`;
+      console.error(line);
+      if (required && result.status !== 'uploaded') throw new Error(line);
+    }
     return videoPath;
   };
 
@@ -320,5 +448,6 @@ export async function createHarness({
     card, hideCard, caption, note, ring,
     cursorTo, look, click, typeInto, ringClick,
     loadUrl, loadApp, signInIfNeeded, finish,
+    upload, t0,
   };
 }
