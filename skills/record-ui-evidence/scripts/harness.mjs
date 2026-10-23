@@ -140,10 +140,14 @@ function localUniqueName(taken, name) {
   }
 }
 
-/** Lowercase a-z0-9 words joined by '-', at most `max` characters; 'caption' when nothing is left. */
+/**
+ * Lowercase words of letters and digits — in any script, so a caption written
+ * in the team's language keeps a readable name — joined by '-', at most `max`
+ * characters; 'caption' when nothing is left.
+ */
 function slug(text, max) {
-  const words = String(text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return words.slice(0, max).replace(/-+$/, '') || 'caption';
+  const words = String(text ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '');
+  return Array.from(words).slice(0, max).join('').replace(/-+$/, '') || 'caption';
 }
 
 /** Path segments that name one record rather than a page: a UUID, a digit run, a long id with a digit. */

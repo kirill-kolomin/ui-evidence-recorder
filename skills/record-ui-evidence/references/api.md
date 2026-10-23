@@ -115,9 +115,10 @@ It never throws: it resolves `{ name, ordinal, tMs, captured: true }`, or
 With `autoCheckpoints` (the default in test mode):
 
 - `caption(text)` records `caption-<slug>` — the text lowercased, runs of
-  anything but `a-z0-9` turned into `-`, cut to 40 characters (`caption-caption`
-  when nothing is left). `caption('')`, which only clears the bar, records
-  nothing.
+  anything but letters and digits (of any script, so `Вход в систему` is
+  `caption-вход-в-систему`) turned into `-`, cut to 40 characters
+  (`caption-caption` when nothing is left). `caption('')`, which only clears
+  the bar, records nothing.
 - `loadUrl` / `loadApp` record `load-<path>` once the ready selector has
   rendered (in a demo, after the card has lifted). The query and hash are
   dropped, and every path segment that is a UUID, a run of digits or a long id

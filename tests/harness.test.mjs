@@ -389,7 +389,8 @@ test('load checkpoints: query and hash dropped, UUIDs, digit runs and long ids a
   await h.loadUrl('http://localhost:4000/share/0a1b2c3d4e5f6a7b8c9d#t=3');
   await h.caption('Hello, world');
   await h.caption('Hello — world!');
-  await h.caption('Привет'); // nothing of [a-z0-9] is left
+  await h.caption('Вход в систему'); // the team's language keeps its words
+  await h.caption('🎉 🎉'); // no letter or digit is left
   await h.caption(''); // clears the bar; not a moment worth keeping
 
   assert.deepEqual(calls('log.checkpoint').map(([, name]) => name), [
@@ -403,12 +404,13 @@ test('load checkpoints: query and hash dropped, UUIDs, digit runs and long ids a
     'load-/share/:id',
     'caption-hello-world',
     'caption-hello-world#2',
+    'caption-вход-в-систему',
     'caption-caption',
   ]);
   // Names are made unique by core's rule, against every name taken so far.
   const [, existing, requested] = calls('uniqueCheckpointName').at(-1);
   assert.equal(requested, 'caption-caption');
-  assert.equal(existing.length, 10);
+  assert.equal(existing.length, 11);
 });
 
 test('demo mode checkpoints: overlays hidden for the screenshot only, unique names, failures reported', async () => {
