@@ -39,7 +39,9 @@ failures that are not obvious until a take is already ruined.
    selectors. Probing is cheap; a ruined take costs the whole run.
 3. **Write one scenario file per claim.** One video per scenario, self-contained,
    with its own title card, so any single video can be watched alone.
-4. **Run it**, then check the produced `.webm` before handing it over.
+4. **Run it**, then check the produced `.webm` before handing it over. When the
+   take is published through Show It Works, the scenario file can be attached as
+   `scenarioScript`.
 5. **Make sure the run is over.** The take ends when `finish()` has returned and
    the process has exited — not when the video file appears.
 
