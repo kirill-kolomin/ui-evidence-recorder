@@ -72,6 +72,13 @@
       }
       #note.pass { border-left-color: #22c55e; }
       #note.fail { background: rgba(220, 38, 38, .95); border-left-color: #fca5a5; }
+
+      /* Every layer this page draws over the app, hidden at once: for the one
+         frame of a checkpoint screenshot in a demo, and for the whole of a test
+         run. A hidden layer neither paints nor intercepts a click. */
+      body.overlays-hidden #card, body.overlays-hidden #caption, body.overlays-hidden #note,
+      body.overlays-hidden #ring, body.overlays-hidden #ringlabel,
+      body.overlays-hidden #cursor, body.overlays-hidden #ripple { visibility: hidden; }
     </style>
   </head>
   <body>
@@ -165,6 +172,11 @@
         r.style.opacity = '1';
         r.classList.add('go');
         setTimeout(() => { r.style.opacity = '0'; }, 450);
+      };
+
+      /** Hide (or bring back) every overlay layer, leaving their state untouched. */
+      window.setOverlaysHidden = (hidden) => {
+        document.body.classList.toggle('overlays-hidden', !!hidden);
       };
 
       window.showRing = (box, label) => {

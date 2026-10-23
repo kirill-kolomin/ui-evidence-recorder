@@ -18,6 +18,9 @@
  *    pointer of its own, so a click is otherwise invisible. Both are drawn in the
  *    wrapper, above every stacking context the app can create.
  *  - ONE SCENARIO PER PROCESS, ONE VIDEO PER SCENARIO.
+ *  - THE SAME SCRIPT IS THE DEMO AND THE FAST E2E TEST. mode: 'test' keeps every
+ *    real Playwright action and drops every hold and every drawn overlay, so a
+ *    scenario written for the camera also runs as a quick test.
  *
  * Usage:
  *   import { createHarness } from '<plugin>/skills/record-ui-evidence/scripts/harness.mjs';
@@ -121,6 +124,47 @@ export async function loadShowItWorks(explicitDir) {
   return null;
 }
 
+/** At most this many checkpoints are captured and uploaded per run (core's RUN_FILE_LIMITS.checkpoints). */
+const CHECKPOINT_LIMIT = 30;
+const MAX_CHECKPOINT_NAME_CHARS = 120;
+
+/** `name`, or `name#2`, `name#3`, ... — core's rule, for when core is not installed. */
+function localUniqueName(taken, name) {
+  const base = String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+    .slice(0, MAX_CHECKPOINT_NAME_CHARS) || 'checkpoint';
+  if (!taken.includes(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `#${n}`;
+    const candidate = `${base.slice(0, MAX_CHECKPOINT_NAME_CHARS - suffix.length)}${suffix}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+}
+
+/** Lowercase a-z0-9 words joined by '-', at most `max` characters; 'caption' when nothing is left. */
+function slug(text, max) {
+  const words = String(text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return words.slice(0, max).replace(/-+$/, '') || 'caption';
+}
+
+/** Path segments that name one record rather than a page: a UUID, a digit run, a long id with a digit. */
+const ID_SEGMENTS = [
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  /^\d+$/,
+  /^(?=.*\d)[A-Za-z0-9_-]{16,}$/,
+];
+
+/** `load-<path>` with query and hash dropped and every id segment as `:id`, so runs compare by page. */
+function loadCheckpointName(url) {
+  let path;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    path = String(url).split(/[?#]/)[0];
+  }
+  const normalized = path.split('/').map((s) => (ID_SEGMENTS.some((re) => re.test(s)) ? ':id' : s)).join('/');
+  return `load-${normalized || '/'}`;
+}
+
 /**
  * Serve the studio page. Port 0 asks the OS for a free port, which is what keeps
  * several scenarios (or several agents) from colliding on a hard-coded one.
@@ -155,6 +199,10 @@ function serveWrapper(wrapperPath, port) {
  * @param {object} [opts.signInSelectors] Overrides for signInIfNeeded, see below.
  * @param {object} [opts.showitworks] Optional run upload when @showitworks/core is installed:
  *   { apiKey, storage, baseUrl, flow, git, corePath, required }. See ../references/api.md.
+ * @param {'demo'|'test'} [opts.mode] 'demo' (default) paces and draws for the camera; 'test'
+ *   runs the same actions without a single hold or overlay.
+ * @param {boolean} [opts.autoCheckpoints] Checkpoint every caption and every load. Default: mode === 'test'.
+ * @param {string} [opts.testIdAttribute] Attribute structural snapshots key elements by. Default 'data-testid'.
  */
 export async function createHarness({
   scenario,
@@ -173,9 +221,14 @@ export async function createHarness({
   playwrightPath,
   signInSelectors = {},
   showitworks = {},
+  mode = 'demo',
+  autoCheckpoints = mode === 'test',
+  testIdAttribute = 'data-testid',
 } = {}) {
   if (!scenario) throw new Error('createHarness needs a scenario name');
   if (!appUrl) throw new Error('createHarness needs an appUrl');
+  if (mode !== 'demo' && mode !== 'test') throw new Error(`createHarness mode must be 'demo' or 'test', not ${JSON.stringify(mode)}`);
+  const testMode = mode === 'test';
 
   const PROFILE = `${root}/profile`;
   const RECORDINGS = `${root}/recordings`;
@@ -225,23 +278,95 @@ export async function createHarness({
 
   const page = context.pages()[0] ?? (await context.newPage());
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load' });
+  // Test mode draws nothing, so nothing would ever lift the studio's opening
+  // "Preparing…" card off the iframe — and it intercepts every click. Hide all
+  // overlay layers once instead: hidden layers neither show nor hit-test.
+  if (testMode) await page.evaluate(() => window.setOverlaysHidden?.(true));
 
   /** Elements of the app under test live in the iframe, never in the top page. */
   const app = page.frameLocator('#app');
   /** The raw Playwright Frame, for the things frameLocator cannot express. */
   const frame = () => page.frames().find((f) => knownOrigins.some((o) => f.url().startsWith(o)));
 
+  /** Every hold goes through here: the camera needs it, a test does not. */
+  const pause = (ms) => (testMode || !ms ? Promise.resolve() : page.waitForTimeout(ms));
+  /** Every overlay call goes through here: a test draws nothing. */
+  const draw = (...args) => (testMode ? Promise.resolve() : page.evaluate(...args));
+
+  // ---------------------------------------------------------------------------
+  // Checkpoints: named moments of the run. With @showitworks/core each one keeps
+  // a structural snapshot of the app's frame and a screenshot, written to
+  // run/checkpoints/ and uploaded with the run, so two runs can be compared
+  // moment by moment. Without core only the name is kept.
+  // ---------------------------------------------------------------------------
+  const CHECKPOINTS_DIR = `${RECORDINGS}/${scenario}/run/checkpoints`;
+  const uniqueName = typeof siw?.core.uniqueCheckpointName === 'function' ? siw.core.uniqueCheckpointName : localUniqueName;
+  const checkpointNames = [];
+  /** What finish() uploads, in ordinal order: { name, tMs, screenshotPath?, snapshotPath? }. */
+  const checkpointFiles = [];
+
+  /**
+   * Record a named moment. Never throws: resolves { name, ordinal, tMs, captured: true }
+   * or { name, ordinal?, tMs, captured: false, reason }.
+   */
+  const checkpoint = async (rawName, { screenshot = true } = {}) => {
+    const at = Date.now();
+    const tMs = at - t0;
+    const name = uniqueName(checkpointNames, rawName);
+    checkpointNames.push(name);
+    if (!siw) return { name, tMs, captured: false, reason: `${CORE} not installed` };
+    if (!log) return { name, tMs, captured: false, reason: captureError?.message ?? String(captureError) };
+    // The event and its slot in the upload are taken together, before any await,
+    // so the event's ordinal is the checkpoint's position in the upload.
+    const ordinal = log.checkpoint(name, at);
+    if (checkpointFiles.length >= CHECKPOINT_LIMIT) {
+      return { name, ordinal, tMs, captured: false, reason: `checkpoint limit (${CHECKPOINT_LIMIT}) reached` };
+    }
+    const files = { name, tMs };
+    checkpointFiles.push(files);
+    try {
+      const snapshot = await siw.core.captureStructure(frame() ?? page.mainFrame(), { testIdAttribute });
+      let png = null;
+      if (screenshot) {
+        // In demo mode the captions and the cursor are hidden for this one frame,
+        // so the screenshot shows the app and nothing the recorder drew over it.
+        if (!testMode) await page.evaluate(() => window.setOverlaysHidden?.(true));
+        try {
+          png = await page.screenshot({ type: 'png' });
+        } finally {
+          if (!testMode) await page.evaluate(() => window.setOverlaysHidden?.(false));
+        }
+      }
+      mkdirSync(CHECKPOINTS_DIR, { recursive: true });
+      const base = `${CHECKPOINTS_DIR}/${String(ordinal).padStart(2, '0')}`;
+      writeFileSync(`${base}.json`, siw.core.serializeSnapshot(snapshot));
+      if (png) writeFileSync(`${base}.png`, png);
+      files.snapshotPath = `${base}.json`;
+      if (png) files.screenshotPath = `${base}.png`;
+      return { name, ordinal, tMs, captured: true };
+    } catch (error) {
+      const reason = error?.message ?? String(error);
+      console.error(`checkpoint failed: ${name}: ${reason}`);
+      return { name, ordinal, tMs, captured: false, reason };
+    }
+  };
+
   // ---------------------------------------------------------------------------
   // Overlays
   // ---------------------------------------------------------------------------
   const card = (title, sub, tag = brand) =>
-    page.evaluate(([t, s, g]) => window.showCard(t, s, g), [title, sub, tag]);
-  const hideCard = () => page.evaluate(() => window.hideCard());
+    draw(([t, s, g]) => window.showCard(t, s, g), [title, sub, tag]);
+  const hideCard = () => draw(() => window.hideCard());
 
-  /** The narration bar. Hold long enough to actually be read: ~2.4s minimum. */
+  /**
+   * The narration bar. Hold long enough to actually be read: ~2.4s minimum.
+   * With autoCheckpoints each caption also marks a checkpoint; an empty one,
+   * which only clears the bar, does not.
+   */
   const caption = async (text, holdMs = 2400) => {
-    await page.evaluate((t) => window.setCaption(t), text);
-    if (holdMs) await page.waitForTimeout(holdMs);
+    await draw((t) => window.setCaption(t), text);
+    if (autoCheckpoints && text) await checkpoint(`caption-${slug(text, 40)}`);
+    await pause(holdMs);
   };
 
   /**
@@ -250,10 +375,10 @@ export async function createHarness({
    * failure — a red corner box reads as an error whatever it says.
    */
   const note = (text, kind) =>
-    page.evaluate(([t, k]) => window.setNote(t, k), [text, kind ?? null]);
+    draw(([t, k]) => window.setNote(t, k), [text, kind ?? null]);
 
   const ring = (box, label) =>
-    page.evaluate(([b, l]) => window.showRing(b, l), [box ?? null, label ?? '']);
+    draw(([b, l]) => window.showRing(b, l), [box ?? null, label ?? '']);
 
   // ---------------------------------------------------------------------------
   // Cursor. The drawn cursor and the real Playwright mouse move together, so the
@@ -273,6 +398,8 @@ export async function createHarness({
 
   /** Glide the drawn cursor (and the real mouse) to a point and wait out the travel. */
   const cursorTo = async (x, y) => {
+    // A test moves only the real mouse, in one step: hover states still apply.
+    if (testMode) return page.mouse.move(x, y, { steps: 1 });
     if (!cursorParked) {
       await page.evaluate(([px, py]) => window.placeCursor(px, py), [
         Math.round(x),
@@ -282,7 +409,7 @@ export async function createHarness({
     }
     await page.evaluate(([px, py]) => window.moveCursor(px, py), [Math.round(x), Math.round(y)]);
     await page.mouse.move(x, y, { steps: 12 });
-    await page.waitForTimeout(MOVE_MS);
+    await pause(MOVE_MS);
   };
 
   /**
@@ -293,7 +420,7 @@ export async function createHarness({
     const { box, x, y } = await centreOf(locator);
     await cursorTo(x, y);
     await ring(box, label);
-    await page.waitForTimeout(hold);
+    await pause(hold);
     if (!keepRing) await ring(null);
   };
 
@@ -302,19 +429,19 @@ export async function createHarness({
     const { box, x, y } = await centreOf(locator);
     await cursorTo(x, y);
     if (ringIt) await ring(box, label);
-    await page.waitForTimeout(hold);
-    await page.evaluate(() => window.clickCursor());
-    await page.waitForTimeout(160);
+    await pause(hold);
+    await draw(() => window.clickCursor());
+    await pause(160);
     await locator.first().click();
-    await page.waitForTimeout(180);
+    await pause(180);
     await ring(null);
   };
 
   /** Click into a field and type it out character by character, so the input is visibly real. */
   const typeInto = async (locator, text, label, { delay = 55 } = {}) => {
     await click(locator, label, { hold: 350 });
-    await locator.first().pressSequentially(text, { delay });
-    await page.waitForTimeout(350);
+    await locator.first().pressSequentially(text, { delay: testMode ? 0 : delay });
+    await pause(350);
   };
 
   /** Ring a target and click it without moving the cursor. The cheap variant of click(). */
@@ -324,7 +451,7 @@ export async function createHarness({
     const box = await target.boundingBox();
     if (box) {
       await ring(box, label);
-      await page.waitForTimeout(hold);
+      await pause(hold);
     }
     if (doClick) await target.click();
     await ring(null);
@@ -338,14 +465,19 @@ export async function createHarness({
    * has rendered. Pass a comma-separated selector list to accept alternatives
    * (e.g. the app shell OR the sign-in form): a redirect to the login page can
    * be late, so the only reliable wait is for whichever of them paints.
+   *
+   * With autoCheckpoints the loaded page is checkpointed as `load-<path>`, ids
+   * in the path written as `:id` — after the card has lifted, so a demo's
+   * screenshot never makes the card blink.
    */
   const loadUrl = async (url, readySelector = defaultReadySelector, { title, sub, tag } = {}) => {
     if (title) await card(title, sub, tag);
     await page.evaluate((u) => window.loadFrame(u), url);
     await app.locator(readySelector).first().waitFor({ state: 'visible', timeout: 180000 });
-    await page.waitForTimeout(900);
+    await pause(900);
     await hideCard();
-    await page.waitForTimeout(400);
+    await pause(400);
+    if (autoCheckpoints) await checkpoint(loadCheckpointName(url));
   };
 
   /** loadUrl for a path relative to appUrl. */
@@ -373,7 +505,7 @@ export async function createHarness({
     await app.locator(submitSel).first().click();
     await card('Signing in', null, 'Setup');
     await app.locator(readySelector).first().waitFor({ state: 'visible', timeout: 180000 });
-    await page.waitForTimeout(900);
+    await pause(900);
     await hideCard();
     return true;
   };
@@ -405,6 +537,13 @@ export async function createHarness({
         git: await siw.node.collectGitMeta({ overrides: git }),
         ...(videoPath ? { video: { path: videoPath } } : {}),
         events: { path: eventsPath },
+        ...(checkpointFiles.length ? {
+          checkpoints: checkpointFiles.map(({ name, tMs, screenshotPath, snapshotPath }) => ({
+            name, tMs,
+            ...(screenshotPath ? { screenshot: { path: screenshotPath } } : {}),
+            ...(snapshotPath ? { snapshot: { path: snapshotPath } } : {}),
+          })),
+        } : {}),
       });
       return { status: 'uploaded', runId: answer?.run?.id, runUrl: answer?.runUrl };
     } catch (error) {
@@ -448,6 +587,6 @@ export async function createHarness({
     card, hideCard, caption, note, ring,
     cursorTo, look, click, typeInto, ringClick,
     loadUrl, loadApp, signInIfNeeded, finish,
-    upload, t0,
+    upload, t0, mode, checkpoint,
   };
 }
