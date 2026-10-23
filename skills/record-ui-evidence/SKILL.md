@@ -103,6 +103,18 @@ Full option and helper reference: `references/api.md`.
   abandoned take. If a run had to be interrupted, check for a surviving
   `chromium`/`node` process from it and stop it before starting the next one.
 
+## Optional: upload the run to a Show It Works storage
+
+When the project has `@showitworks/core` installed, every take also keeps a run
+log — the app's console, uncaught errors and request statuses, scrubbed of
+secrets — in `recordings/<scenario>/run/events.jsonl`. With `SHOWITWORKS_API_KEY`
+and `SHOWITWORKS_STORAGE` set (or `showitworks: { apiKey, storage }`),
+`finish({ outcome: 'passed' })` uploads the video and the log as one run, so the
+flow's history can be asked later what changed. `finish()` prints
+`run uploaded: <url>` or why it did not upload; an upload never fails the take
+unless you pass `required: true`. Without core nothing changes. Details in
+`references/api.md`.
+
 ## When something looks wrong in the output
 
 Read `references/pitfalls.md` before changing the harness. It lists the failures

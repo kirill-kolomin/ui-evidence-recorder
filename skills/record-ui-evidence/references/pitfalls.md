@@ -92,6 +92,28 @@ for the next scenario. `finish()` is idempotent, so the `finally` is safe even
 when the happy path already called it. After an interrupted run, look for the
 surviving `chromium`/`node` process and stop it before recording again.
 
+## The run log is full of the recorder's own traffic
+
+**Cause.** The recorded page is the studio, not the app, so a capture attached to
+the whole browser context also sees the studio page loading and logging — and,
+attached until the very end, every request the context close aborts.
+
+**Fix.** With `@showitworks/core` the harness ignores the studio's origin
+(`http://127.0.0.1:<port>`), starts listening before the studio loads and stops
+before the context closes. If you attach a capture of your own, give it the same
+exclusion.
+
+## A take was lost to a failed upload
+
+**Cause.** A missing key, an unknown storage, a quota or a network error all
+happen after the video is already written.
+
+**Fix.** None of them fails the take: `finish()` prints one stderr line
+(`upload skipped: …` / `upload failed: …`), returns the video path as usual and
+resolves `h.upload` with the status; the video and `run/events.jsonl` stay on
+disk. Pass `showitworks: { required: true }` only where a missing run must fail
+the script, e.g. in CI.
+
 ## The reviewer could not tell whether the app did the work
 
 **Cause.** The take started in the middle and proved its point by reading the DOM
