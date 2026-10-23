@@ -4,7 +4,7 @@ description: Record a watchable evidence video of a web app with Playwright - a 
 license: MIT
 metadata:
   author: Kirill Kolomin
-  version: "1.1.0"
+  version: "1.2.0"
 ---
 
 # Record UI evidence
