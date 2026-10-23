@@ -103,16 +103,32 @@ Full option and helper reference: `references/api.md`.
   abandoned take. If a run had to be interrupted, check for a surviving
   `chromium`/`node` process from it and stop it before starting the next one.
 
+## The same script is the demo and the fast e2e test
+
+A scenario is written once, for the camera. `createHarness({ mode: 'test' })`
+runs it unchanged as a quick test: every real action — loads, clicks, typing,
+mouse moves, the waits for the ready selector — still happens, while every hold
+and every drawn overlay (card, caption, note, ring, cursor) is skipped. Keep the
+pacing in `caption` holds and the helpers' `hold` options, which test mode
+drops, rather than in `page.waitForTimeout` calls of your own, which it cannot.
+
+`h.checkpoint('name')` marks a moment worth comparing between runs. With
+`@showitworks/core` it keeps a structural snapshot of the app and a screenshot
+of the page (the overlays hidden for that frame) and uploads them with the run;
+without core it keeps the name only. In test mode every caption and every load
+is checkpointed automatically (`autoCheckpoints`). Details in
+`references/api.md`.
+
 ## Optional: upload the run to a Show It Works storage
 
 When the project has `@showitworks/core` installed, every take also keeps a run
 log — the app's console, uncaught errors and request statuses, scrubbed of
 secrets — in `recordings/<scenario>/run/events.jsonl`. With `SHOWITWORKS_API_KEY`
 and `SHOWITWORKS_STORAGE` set (or `showitworks: { apiKey, storage }`),
-`finish({ outcome: 'passed' })` uploads the video and the log as one run, so the
-flow's history can be asked later what changed. `finish()` prints
-`run uploaded: <url>` or why it did not upload; an upload never fails the take
-unless you pass `required: true`. Without core nothing changes. Details in
+`finish({ outcome: 'passed' })` uploads the video, the log and the checkpoints
+as one run, so the flow's history can be asked later what changed. `finish()`
+prints `run uploaded: <url>` or why it did not upload; an upload never fails the
+take unless you pass `required: true`. Without core nothing changes. Details in
 `references/api.md`.
 
 ## When something looks wrong in the output
