@@ -15,6 +15,10 @@ export async function uploadRunFromFiles(client, spec) {
     spec,
     video: spec.video ? readFileSync(spec.video.path, 'utf8') : null,
     events: readFileSync(spec.events.path, 'utf8'),
+    checkpoints: (spec.checkpoints ?? []).map((c) => ({
+      screenshot: c.screenshot ? readFileSync(c.screenshot.path, 'utf8') : null,
+      snapshot: c.snapshot ? readFileSync(c.snapshot.path, 'utf8') : null,
+    })),
   });
   const failure = globalThis.__harnessTest?.uploadError;
   if (failure) throw new Error(failure);

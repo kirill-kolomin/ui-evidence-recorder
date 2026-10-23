@@ -281,7 +281,7 @@ export async function createHarness({
   // Test mode draws nothing, so nothing would ever lift the studio's opening
   // "Preparing…" card off the iframe — and it intercepts every click. Hide all
   // overlay layers once instead: hidden layers neither show nor hit-test.
-  if (testMode) await page.evaluate(() => window.setOverlaysHidden?.(true));
+  if (testMode) await page.evaluate((hidden) => window.setOverlaysHidden?.(hidden), true);
 
   /** Elements of the app under test live in the iframe, never in the top page. */
   const app = page.frameLocator('#app');
@@ -330,11 +330,11 @@ export async function createHarness({
       if (screenshot) {
         // In demo mode the captions and the cursor are hidden for this one frame,
         // so the screenshot shows the app and nothing the recorder drew over it.
-        if (!testMode) await page.evaluate(() => window.setOverlaysHidden?.(true));
+        if (!testMode) await page.evaluate((hidden) => window.setOverlaysHidden?.(hidden), true);
         try {
           png = await page.screenshot({ type: 'png' });
         } finally {
-          if (!testMode) await page.evaluate(() => window.setOverlaysHidden?.(false));
+          if (!testMode) await page.evaluate((hidden) => window.setOverlaysHidden?.(hidden), false);
         }
       }
       mkdirSync(CHECKPOINTS_DIR, { recursive: true });
