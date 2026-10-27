@@ -24,11 +24,107 @@ const h = await createHarness({ /* options */ });
 | `wrapperPath` | bundled `wrapper.html` | An alternative studio page. |
 | `playwrightPath` | *(auto)* | Explicit path to Playwright's entry file. |
 | `signInSelectors` | `{ email: '#email', password: '#password', submit: 'button[type="submit"]' }` | Per-project overrides for `signInIfNeeded`. |
+| `showitworks` | `{}` | Optional run upload to a Show It Works storage, see below. |
+| `mode` | `'demo'` | `'demo'` paces and draws for the camera; `'test'` runs the same scenario as a fast e2e test, see below. |
+| `autoCheckpoints` | `mode === 'test'` | Record a checkpoint at every caption and after every load. |
+| `testIdAttribute` | `'data-testid'` | The attribute a checkpoint's structural snapshot keys elements by. |
 
 Playwright is resolved in this order: `playwrightPath`, `$EVIDENCE_PLAYWRIGHT`, a
 bare `import('playwright')`, then a resolve from the current working directory.
 That last step is what lets a scenario run from inside any project that already
 has Playwright, without installing this plugin as a dependency.
+
+## Optional: the run upload
+
+When `@showitworks/core` can be resolved, the take also keeps a run log: the
+app's console messages, uncaught errors and requests (method, URL and status —
+never bodies or headers), scrubbed of secrets and timed from the moment the video
+starts. `finish()` writes it to `<root>/recordings/<scenario>/run/events.jsonl`
+and, given an API key and a storage, uploads it with the video as one run.
+Without core none of this runs — no listeners, no files, no output.
+
+| `showitworks.*` | Default | What it is for |
+|---|---|---|
+| `apiKey` | `$SHOWITWORKS_API_KEY` | Key from https://showitworks.app/settings; it decides the project. |
+| `storage` | `$SHOWITWORKS_STORAGE` | Storage id or name in that project. |
+| `baseUrl` | `$SHOWITWORKS_URL`, else `https://showitworks.app` | The service. |
+| `flow` | `scenario` | History identity: every run of one flow is compared with the others. |
+| `git` | *(detected)* | `{ commitSha, commitMessage, branch }` overrides; otherwise CI variables, then `git` in the cwd. |
+| `corePath` | *(auto)* | Directory of the `@showitworks/core` package. |
+| `required` | `false` | Make `finish()` throw when the run was not uploaded. |
+
+Core is resolved like Playwright: `corePath`, `$EVIDENCE_SHOWITWORKS` (also a
+package directory), a bare `import('@showitworks/core')`, then the package as
+installed in the current working directory.
+
+`finish()` prints exactly one line to stderr — `run uploaded: <url>`,
+`upload skipped: <reason>` (`no API key`, `no storage`) or
+`upload failed: <message>` — and still returns the video path. Without core it
+prints nothing, unless `required` is set. The run's checkpoints (below) ride the
+same upload.
+
+## Demo mode and test mode: the same script twice
+
+A scenario is written once, for the camera. `mode: 'test'` runs it unchanged as a
+fast e2e test: every real Playwright action still happens — the loads, the waits
+for the ready selector, the mouse moves, the clicks, the typing — and everything
+that exists only for a viewer is dropped.
+
+| | `mode: 'demo'` (default) | `mode: 'test'` |
+|---|---|---|
+| Holds (`caption` 2400, `look` 1500, `click` 550/160/180, `typeInto` 350, `ringClick` 1000, the cursor's 620 ms travel, `loadUrl` 900/400, `signInIfNeeded` 900) | as written | none — not a single `waitForTimeout` |
+| `card`, `hideCard`, `note`, `ring`, the ring and click ripple of `click`/`look`/`ringClick` | drawn | nothing; the studio's layers are hidden once at start, so the opening card cannot intercept a click |
+| `cursorTo` | drawn cursor glides, real mouse in 12 steps | real mouse only, in one step (hover states still apply) |
+| `typeInto` | `delay` per key, 55 ms by default | `delay: 0` |
+| `caption(text)` | drawn and held | nothing drawn |
+| `autoCheckpoints` default | `false` | `true` |
+
+Holds you write yourself — `h.page.waitForTimeout(…)` in a scenario — are yours
+and are not skipped; pace a demo through `caption` holds and the helpers' `hold`
+options, which test mode drops.
+
+## Checkpoints
+
+```js
+const { name, ordinal, tMs, captured, reason } = await h.checkpoint('draft saved');
+```
+
+`checkpoint(name, { screenshot = true } = {})` marks a named moment of the run.
+`tMs` is milliseconds since `t0`. Names are made unique within the run — a
+repeat becomes `name#2`, `name#3`, … — and `name` in the answer is the one kept.
+It never throws: it resolves `{ name, ordinal, tMs, captured: true }`, or
+`{ name, ordinal?, tMs, captured: false, reason }`.
+
+- **With `@showitworks/core`** it writes a `checkpoint` event into the run log
+  (`ordinal` is its 0-based position), takes a structural snapshot of the app's
+  frame (roles, accessible names, test ids, boxes — scrubbed of secrets) and a
+  PNG screenshot of the page, and writes them to
+  `recordings/<scenario>/run/checkpoints/<NN>.json` and `<NN>.png`. `finish()`
+  uploads them with the run, so the flow's history can compare runs moment by
+  moment. In demo mode the captions, card, note, ring and cursor are hidden for
+  the frame of the screenshot, which therefore shows the app alone.
+  `{ screenshot: false }` takes the snapshot only and touches nothing on screen.
+- A capture that fails (the frame navigated away, the page closed) prints one
+  stderr line, `checkpoint failed: <name>: <message>`, and resolves
+  `captured: false` with the message as `reason`; the event is still logged.
+- At most 30 checkpoints are captured per run (the upload's limit); later ones
+  are logged as events only, with reason `checkpoint limit (30) reached`.
+- **Without core** only the name is kept: `captured: false`, reason
+  `@showitworks/core not installed`, and nothing is written.
+
+With `autoCheckpoints` (the default in test mode):
+
+- `caption(text)` records `caption-<slug>` — the text lowercased, runs of
+  anything but letters and digits (of any script, so `Вход в систему` is
+  `caption-вход-в-систему`) turned into `-`, cut to 40 characters
+  (`caption-caption` when nothing is left). `caption('')`, which only clears
+  the bar, records nothing.
+- `loadUrl` / `loadApp` record `load-<path>` once the ready selector has
+  rendered (in a demo, after the card has lifted). The query and hash are
+  dropped, and every path segment that is a UUID, a run of digits or a long id
+  (16+ letters, digits, `_` or `-`, with at least one digit) becomes `:id`, so
+  `/storages/3f2b…/runs/12345?tab=events` is `load-/storages/:id/runs/:id` in
+  every run.
 
 ## Returned helpers
 
@@ -40,7 +136,9 @@ has Playwright, without installing this plugin as a dependency.
 | `app` | `FrameLocator` for the app under test. Every app element is located through this. |
 | `frame()` | The raw Playwright `Frame` of the app, for what `FrameLocator` cannot express. |
 | `context` | The persistent browser context. |
-| `viewport`, `appUrl`, `wrapperPort` | Echoed back for convenience. |
+| `viewport`, `appUrl`, `wrapperPort`, `mode` | Echoed back for convenience. |
+| `t0` | Epoch ms the run's clock starts at: right after launch, when the video starts. |
+| `upload` | Promise that settles once `finish()` has run: `{ status: 'uploaded' \| 'skipped' \| 'failed', runId?, runUrl?, reason? }`. Never rejects; without core it is `skipped` with reason `@showitworks/core not installed`. |
 
 ### Staging
 
@@ -48,7 +146,7 @@ has Playwright, without installing this plugin as a dependency.
 |---|---|
 | `card(title, sub?, tag?)` | Show the full-screen title card. `tag` defaults to `brand`. |
 | `hideCard()` | Reveal the app behind it. |
-| `caption(text, holdMs = 2400)` | The narration bar. Awaits the hold, so it doubles as the scenario's pacing. |
+| `caption(text, holdMs = 2400)` | The narration bar. Awaits the hold, so it doubles as the scenario's pacing. With `autoCheckpoints`, also a checkpoint. |
 | `note(text, kind?)` | Top-right note. `kind` is `'info' \| 'pass' \| 'fail'`; omitted, it is read off a leading `PASS`/`FAIL`. `note('')` clears it. |
 | `ring(box \| null, label?)` | Draw the highlight ring by hand from a bounding box. Rarely needed directly. |
 
@@ -69,7 +167,8 @@ has Playwright, without installing this plugin as a dependency.
 | `loadApp(path, readySelector?, { title, sub, tag }?)` | Load a path relative to `appUrl` behind the title card. |
 | `loadUrl(url, readySelector?, { title, sub, tag }?)` | The absolute-URL form, for a second app. |
 | `signInIfNeeded(email, password, readySelector?)` | Signs in only if the sign-in form is what rendered; returns whether it did. |
-| `finish()` | Close the browser, the profile and the studio server; returns the path of the written `.webm`, or `null` when `record: false`. Nothing is released until it runs, so call it from a `finally`; calling it twice is safe. |
+| `checkpoint(name, { screenshot = true }?)` | Mark a named moment; with core, snapshot and screenshot it. See [Checkpoints](#checkpoints). |
+| `finish({ outcome }?)` | Close the browser, the profile and the studio server; returns the path of the written `.webm`, or `null` when `record: false`. Nothing is released until it runs, so call it from a `finally`; calling it twice is safe. With core it then writes the run log and uploads the run, labelled with `outcome` (`'passed' \| 'failed' \| 'timedOut' \| 'skipped' \| 'interrupted' \| 'unknown'`, default `'unknown'`). |
 
 ## Recipes
 
@@ -98,3 +197,36 @@ await h.note(failures.length ? `FAIL - ${failures.length} check(s)` : 'PASS - al
 await h.caption('Read the result on screen, not from the console.', 5000);
 await h.note('');
 ```
+
+**A take uploaded as a run** (`@showitworks/core` installed, `SHOWITWORKS_API_KEY` set)
+
+```js
+const h = await createHarness({ scenario: 'saves-a-draft', appUrl,
+  showitworks: { storage: 'evidence' } });
+let outcome = 'failed';
+try {
+  // ... the scenario ...
+  outcome = 'passed';
+} finally {
+  await h.finish({ outcome });
+}
+const { status, runUrl } = await h.upload;
+```
+
+**The same scenario as a fast e2e test**
+
+```js
+const h = await createHarness({ scenario: 'saves-a-draft', appUrl,
+  mode: process.argv.includes('--test') ? 'test' : 'demo' });
+try {
+  // ... the scenario, unchanged ...
+  await h.checkpoint('draft saved');
+  await h.caption('The draft survived the reload.', 4000);
+} finally {
+  await h.finish();
+}
+```
+
+`node saves-a-draft.mjs` records the demo; `node saves-a-draft.mjs --test` runs
+the same steps with no holds and no overlays, checkpointing every caption and
+load.

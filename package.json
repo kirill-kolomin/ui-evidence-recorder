@@ -1,11 +1,53 @@
 {
   "name": "ui-evidence-recorder",
-  "version": "1.1.0",
-  "description": "A studio for playwright video recording",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "1.2.0",
+  "description": "Record watchable evidence videos of a web app with Playwright: a studio page that never navigates, a title card over the boot, a drawn cursor, highlight rings and a narration bar. Optionally uploads each take as a run to a Show It Works storage.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Kirill Kolomin",
+  "homepage": "https://github.com/kirill-kolomin/ui-evidence-recorder#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kirill-kolomin/ui-evidence-recorder.git"
   },
-  "author": "",
-  "license": "ISC"
+  "bugs": {
+    "url": "https://github.com/kirill-kolomin/ui-evidence-recorder/issues"
+  },
+  "keywords": [
+    "playwright",
+    "recording",
+    "evidence",
+    "screencast",
+    "qa",
+    "demo",
+    "agent-skill",
+    "claude-code",
+    "show-it-works"
+  ],
+  "exports": {
+    "./harness": "./skills/record-ui-evidence/scripts/harness.mjs"
+  },
+  "files": [
+    "skills",
+    "plugin.json",
+    ".claude-plugin"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "peerDependencies": {
+    "playwright": ">=1.40",
+    "@showitworks/core": ">=0.1.0 <1"
+  },
+  "peerDependenciesMeta": {
+    "playwright": {
+      "optional": true
+    },
+    "@showitworks/core": {
+      "optional": true
+    }
+  }
 }

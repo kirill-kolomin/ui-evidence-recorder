@@ -58,6 +58,14 @@ console.log(await h.finish());
 
 Playwright is resolved from the consuming project, so nothing needs installing here.
 
+If the project also has [`@showitworks/core`](https://www.npmjs.com/package/@showitworks/core) installed,
+the take keeps a run log of the app's console and requests, and with
+`SHOWITWORKS_API_KEY` and `SHOWITWORKS_STORAGE` set `finish()` uploads the video
+and the log as a run to a Show It Works storage. Without it nothing changes. See
+`references/api.md`.
+
+`npm test` runs the harness tests against a fake Playwright — no browser needed.
+
 ## Licence
 
 MIT — see `LICENSE`.
